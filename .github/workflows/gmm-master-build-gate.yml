@@ -92,6 +92,11 @@ jobs:
           c = ''.join(lines)
           component.write_text(c)
 
+          # Normalize any escaped newline sequences introduced by source string replacements.
+          for changed in (middleware, rest, component):
+              fixed = changed.read_text().replace(chr(92) + "n", chr(10))
+              changed.write_text(fixed)
+
           # Fail closed on unexpected source drift rather than committing a partial patch.
           assert 'gmmBuildId: GMM_BUILD_ID' in middleware.read_text()
           assert 'assertApprovedGmmBuild' in middleware.read_text()
