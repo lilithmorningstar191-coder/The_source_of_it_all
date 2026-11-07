@@ -1,0 +1,110 @@
+name: Integrate GMM master build gate
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/gmm-master-build-gate.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-render-source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Patch the exact Render source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f GMM-Source-Download.zip
+          mkdir -p /tmp/gmm-src
+          unzip -q GMM-Source-Download.zip -d /tmp/gmm-src
+          python3 <<'PY'
+          from pathlib import Path
+          root = Path("/tmp/gmm-src")
+          candidates = list(root.glob("GetMoneyMachine_MainRobot_Integrated_Source_2026-11-02/source"))
+          if len(candidates) != 1:
+              raise SystemExit(f"Expected exactly one Render source root; found {candidates}")
+          src = candidates[0]
+
+          identity = src / "src/lib/gmm/build-identity.ts"
+          identity.parent.mkdir(parents=True, exist_ok=True)
+          identity.write_text('''/** Stable identity baked into the approved Get Money Machine New web build. */
+          export const GMM_BUILD_ID = "get-money-machine-new-2026-11-07";
+          ''')
+
+          gate = src / "src/lib/gmm/build-gate.server.ts"
+          gate.write_text('''import { GMM_BUILD_ID } from "./build-identity";
+
+          /**
+           * Owner-controlled gate. It remains OFF unless explicitly enabled in Render.
+           * When enabled, only the approved build identity may use owner operations.
+           */
+          export function assertApprovedGmmBuild(suppliedBuildId: unknown): void {
+            if (process.env.GMM_KILL_SWITCH_ENABLED?.trim().toLowerCase() !== "true") return;
+
+            const configured = process.env.GMM_ALLOWED_BUILD_ID?.trim();
+            const allowedBuildId = configured || GMM_BUILD_ID;
+            if (suppliedBuildId !== allowedBuildId) {
+              const error = new Error("This Get Money Machine build has been disabled. Open Get Money Machine New.") as Error & { status: number };
+              error.status = 426;
+              throw error;
+            }
+          }
+          ''')
+
+          middleware = src / "src/lib/auth/middleware.ts"
+          m = middleware.read_text()
+          if 'GMM_BUILD_ID' not in m:
+              m = m.replace('const { getBearerToken } = await import("./client");',
+                            'const { getBearerToken } = await import("./client");\\n    const { GMM_BUILD_ID } = await import("@/lib/gmm/build-identity");')
+              m = m.replace('return next({ sendContext: { bearerToken: getBearerToken() ?? undefined } });',
+                            'return next({ sendContext: { bearerToken: getBearerToken() ?? undefined, gmmBuildId: GMM_BUILD_ID } });')
+          if 'assertApprovedGmmBuild' not in m:
+              m = m.replace('const { requireUserId } = await import("./verify.server");',
+                            'const { requireUserId } = await import("./verify.server");\\n    const { assertApprovedGmmBuild } = await import("@/lib/gmm/build-gate.server");\\n    assertApprovedGmmBuild((context as typeof context & { gmmBuildId?: string }).gmmBuildId);')
+          middleware.write_text(m)
+
+          rest = src / "src/lib/gmm/rest.ts"
+          r = rest.read_text()
+          if 'assertApprovedGmmBuild' not in r:
+              r = r.replace('import { requireUserId } from "@/lib/auth/verify.server";',
+                            'import { requireUserId } from "@/lib/auth/verify.server";\\nimport { assertApprovedGmmBuild } from "./build-gate.server";')
+              r = r.replace('    const userId = await requireUser(request);',
+                            '    // Health, provider webhooks and secret-authenticated worker stay available.\\n    assertApprovedGmmBuild(request.headers.get("x-gmm-build-id") ?? undefined);\\n    const userId = await requireUser(request);')
+          rest.write_text(r)
+
+          component = src / "src/components/gmm-app.tsx"
+          c = component.read_text()
+          if 'GMM_BUILD_ID' not in c:
+              c = c.replace('import { STATION_BLURBS, DESTINATION_TYPES } from "@/lib/gmm/constants";',
+                            'import { STATION_BLURBS, DESTINATION_TYPES } from "@/lib/gmm/constants";\\nimport { GMM_BUILD_ID } from "@/lib/gmm/build-identity";')
+          # Attach the identity to every direct REST fetch in this component.
+          lines = []
+          for line in c.splitlines(keepends=True):
+              if 'fetch(' in line and 'headers: {' in line and 'X-GMM-Build-ID' not in line:
+                  line = line.replace('headers: {', 'headers: { "X-GMM-Build-ID": GMM_BUILD_ID,', 1)
+              lines.append(line)
+          c = ''.join(lines)
+          component.write_text(c)
+
+          # Fail closed on unexpected source drift rather than committing a partial patch.
+          assert 'gmmBuildId: GMM_BUILD_ID' in middleware.read_text()
+          assert 'assertApprovedGmmBuild' in middleware.read_text()
+          assert 'assertApprovedGmmBuild' in rest.read_text()
+          assert 'GMM_BUILD_ID' in component.read_text()
+          print("GMM build gate patch applied to Render source archive.")
+          PY
+          cd /tmp/gmm-src
+          zip -qr "$GITHUB_WORKSPACE/GMM-Source-Download.zip.new" .
+          cd "$GITHUB_WORKSPACE"
+          mv GMM-Source-Download.zip.new GMM-Source-Download.zip
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add GMM-Source-Download.zip
+          git commit -m "Integrate GMM New master build kill switch"
+          git push origin HEAD:main
