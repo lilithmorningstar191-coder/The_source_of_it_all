@@ -1,0 +1,73 @@
+name: Patch deployed GMM archive
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/patch-gmm-archive.yml
+permissions:
+  contents: write
+jobs:
+  patch-archive:
+    if: "!contains(github.event.head_commit.message, '[gmm-archive-patched]')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Patch the exact Render source archive
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, zipfile, tempfile, os
+          archive = 'GMM-Source-Download.zip'
+          root = 'GetMoneyMachine_MainRobot_Integrated_Source_2026-11-02/source/'
+          with zipfile.ZipFile(archive, 'r') as src:
+              entries = {n: src.read(n) for n in src.namelist()}
+          def read(path):
+              key = root + path
+              if key not in entries: raise SystemExit('Missing expected source entry: ' + key)
+              return entries[key].decode('utf-8')
+          def write(path, value): entries[root + path] = value.encode('utf-8')
+          env_path = 'src/lib/gmm/env.ts'
+          env_text = read(env_path)
+          marker = 'import { env } from "@/lib/env.server";'
+          if 'gmmFinancialKillSwitchEnabled' not in env_text:
+              env_text = env_text.replace(marker, marker + '\\n\\nimport { financialKillSwitchEnabled } from "./financial-kill-switch";\\n\\nexport function gmmFinancialKillSwitchEnabled(): boolean {\\n  return financialKillSwitchEnabled(env("GMM_FINANCIAL_KILL_SWITCH"));\\n}')
+          write(env_path, env_text)
+          core_path = 'src/lib/gmm/core.ts'
+          core = read(core_path)
+          old_import = 'import { providerStatusMap, paypalConfigured, paypalClientId, paypalClientSecret, paypalWebhookId, stripeConfigured, gmmNativeTransferConfigured } from "./env";'
+          new_import = 'import { providerStatusMap, paypalConfigured, paypalClientId, paypalClientSecret, paypalWebhookId, stripeConfigured, gmmNativeTransferConfigured, gmmFinancialKillSwitchEnabled } from "./env";'
+          if old_import in core: core = core.replace(old_import, new_import)
+          if 'GMM_MASTER_FINANCIAL_KILL_SWITCH_ENGAGED' not in core:
+              anchor = '  if (!Number.isFinite(input.amount) || input.amount <= 0) {'
+              guard = '  // Master fail-closed gate: pause every live transfer rail before any withdrawal or debit.\\n  if (gmmFinancialKillSwitchEnabled()) {\\n    throw new GmmError("GMM_MASTER_FINANCIAL_KILL_SWITCH_ENGAGED: all live financial execution is paused.", 423);\\n  }\\n'
+              if anchor not in core: raise SystemExit('requestTransfer insertion point not found')
+              core = core.replace(anchor, guard + anchor, 1)
+          if 'master_kill_switch_engaged:' not in core:
+              anchor = '    transfer_execution: {\\n'
+              if anchor in core: core = core.replace(anchor, anchor + '      master_kill_switch_engaged: gmmFinancialKillSwitchEnabled(),\\n', 1)
+          write(core_path, core)
+          write('src/lib/gmm/financial-kill-switch.ts', '''/** Missing or malformed configuration fails closed. Only explicit false opens execution. */\\nexport function financialKillSwitchEnabled(value: string | undefined): boolean {\\n  return String(value ?? "").trim().toLowerCase() !== "false";\\n}\\n''')
+          write('src/lib/gmm/env.test.ts', '''import assert from "node:assert/strict";\\nimport test from "node:test";\\nimport { financialKillSwitchEnabled } from "./financial-kill-switch.ts";\\ntest("kill switch defaults closed", () => {\\n  assert.equal(financialKillSwitchEnabled(undefined), true);\\n  assert.equal(financialKillSwitchEnabled(""), true);\\n  assert.equal(financialKillSwitchEnabled("true"), true);\\n  assert.equal(financialKillSwitchEnabled("0"), true);\\n});\\ntest("only explicit false opens switch", () => {\\n  assert.equal(financialKillSwitchEnabled("false"), false);\\n  assert.equal(financialKillSwitchEnabled(" FALSE "), false);\\n});\\n''')
+          package_path = 'package.json'
+          package = json.loads(read(package_path))
+          if 'src/lib/gmm/env.test.ts' not in package['scripts']['test']:
+              package['scripts']['test'] += ' && node --experimental-strip-types --test src/lib/gmm/env.test.ts'
+          write(package_path, json.dumps(package, indent=2) + '\\n')
+          write('FINANCIAL_KILL_SWITCH_IMPLEMENTATION.md', '# GMM master financial kill switch\\n\\nServer-side requestTransfer fails closed by default. GMM_FINANCIAL_KILL_SWITCH remains engaged when missing, blank, malformed, or any value other than explicit false (case-insensitive). While engaged, requestTransfer returns HTTP 423 before creating a withdrawal, reserving funds, or calling any transfer rail.\\n\\nDo not set GMM_FINANCIAL_KILL_SWITCH=false until authorized source debit, native settlement executor, destination receipt verification, production database, and reconciliation are independently proven ready. Ledger status exposes master_kill_switch_engaged.\\n')
+          fd, tmp = tempfile.mkstemp(suffix='.zip'); os.close(fd)
+          with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as out:
+              for name, data in entries.items(): out.writestr(name, data)
+          os.replace(tmp, archive)
+          with zipfile.ZipFile(archive) as check:
+              if check.testzip() is not None: raise SystemExit('ZIP integrity check failed')
+          PY
+      - name: Commit updated Render source archive
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add GMM-Source-Download.zip
+          git commit -m 'Apply GMM fail-closed master financial kill switch [gmm-archive-patched]'
+          git push
