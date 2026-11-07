@@ -1,0 +1,82 @@
+name: Build Get Money Machine Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "GMM-Source-Download.zip"
+      - ".github/workflows/android-apk.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out Get Money Machine New source
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Extract the existing source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s GMM-Source-Download.zip
+          mkdir -p extracted
+          unzip -oq GMM-Source-Download.zip -d extracted
+          echo "Extracted source tree:"
+          find extracted -maxdepth 4 -type f \( -name 'settings.gradle' -o -name 'settings.gradle.kts' -o -name 'build.gradle' -o -name 'build.gradle.kts' -o -name 'gradlew' -o -name 'AndroidManifest.xml' \) | sort | head -200
+
+      - name: Build the existing Android project
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd extracted
+          WRAPPER="$(find . -type f -name gradlew -print -quit)"
+          if [ -n "$WRAPPER" ]; then
+            PROJECT_DIR="$(dirname "$WRAPPER")"
+            cd "$PROJECT_DIR"
+            chmod +x ./gradlew
+            ./gradlew --no-daemon assembleDebug
+          else
+            SETTINGS="$(find . -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print -quit)"
+            if [ -z "$SETTINGS" ]; then
+              echo "::error::The archive does not contain a Gradle Android project (no gradlew or settings.gradle)."
+              exit 1
+            fi
+            PROJECT_DIR="$(dirname "$SETTINGS")"
+            cd "$PROJECT_DIR"
+            gradle --no-daemon assembleDebug
+          fi
+
+      - name: Locate APK output
+        id: apk
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find extracted -type f -path '*/build/outputs/apk/*/*.apk' -print -quit)"
+          if [ -z "$APK" ]; then
+            echo "::error::Gradle completed but no APK was produced."
+            exit 1
+          fi
+          echo "path=$APK" >> "$GITHUB_OUTPUT"
+          echo "Built APK: $APK"
+          ls -lh "$APK"
+
+      - name: Publish installable debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Get-Money-Machine-New-debug-APK
+          path: ${{ steps.apk.outputs.path }}
+          if-no-files-found: error
+          retention-days: 14
