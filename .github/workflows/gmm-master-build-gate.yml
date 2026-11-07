@@ -92,10 +92,22 @@ jobs:
           c = ''.join(lines)
           component.write_text(c)
 
-          # Normalize any escaped newline sequences introduced by source string replacements.
-          for changed in (middleware, rest, component):
-              fixed = changed.read_text().replace(chr(92) + "n", chr(10))
+          # Fix only the inserted import separators; preserve existing JS string escapes.
+          for changed, marker in (
+              (middleware, ';' + chr(92) + 'n    const { GMM_BUILD_ID'),
+              (middleware, ';' + chr(92) + 'n    const { assertApprovedGmmBuild'),
+              (rest, ';' + chr(92) + 'nimport { assertApprovedGmmBuild'),
+              (component, ';' + chr(92) + 'nimport { GMM_BUILD_ID'),
+          ):
+              fixed = changed.read_text()
+              fixed = fixed.replace(marker, marker.replace(chr(92) + 'n', chr(10)))
               changed.write_text(fixed)
+
+          # Repair the single newline literal affected by the previous broad normalizer.
+          fixed_component = component.read_text()
+          fixed_component = fixed_component.replace('.join("' + chr(10) + '")',
+                                                    '.join("' + chr(92) + 'n")')
+          component.write_text(fixed_component)
 
           # Fail closed on unexpected source drift rather than committing a partial patch.
           assert 'gmmBuildId: GMM_BUILD_ID' in middleware.read_text()
