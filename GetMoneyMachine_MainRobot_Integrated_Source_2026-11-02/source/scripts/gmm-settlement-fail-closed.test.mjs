@@ -16,7 +16,7 @@ test('native transfer adapter sends an authenticated idempotent GMM-ledger instr
   const source = await read('src/lib/gmm/native-transfer.ts');
   assert.match(source, /if \(!endpoint \|\| !secret\)[\s\S]*?No transfer was sent/);
   assert.match(source, /url\.protocol !== "https:"/);
-  assert.match(source, /"Authorization": `Bearer \\$\{secret\}`/);
+  assert.ok(source.includes("\"Authorization\": `Bearer ${secret}`"));
   assert.match(source, /"Idempotency-Key": input\.idempotencyKey/);
   assert.match(source, /source: "GMM_LEDGER"/);
   assert.match(source, /validateNativeTransferResponse\(body, \{ amount: input\.amount, currency: input\.currency \}\)/);
