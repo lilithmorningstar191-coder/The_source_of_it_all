@@ -61,28 +61,28 @@ jobs:
           m = middleware.read_text()
           if 'GMM_BUILD_ID' not in m:
               m = m.replace('const { getBearerToken } = await import("./client");',
-                            'const { getBearerToken } = await import("./client");\\n    const { GMM_BUILD_ID } = await import("@/lib/gmm/build-identity");')
+                            'const { getBearerToken } = await import("./client");\n    const { GMM_BUILD_ID } = await import("@/lib/gmm/build-identity");')
               m = m.replace('return next({ sendContext: { bearerToken: getBearerToken() ?? undefined } });',
                             'return next({ sendContext: { bearerToken: getBearerToken() ?? undefined, gmmBuildId: GMM_BUILD_ID } });')
           if 'assertApprovedGmmBuild' not in m:
               m = m.replace('const { requireUserId } = await import("./verify.server");',
-                            'const { requireUserId } = await import("./verify.server");\\n    const { assertApprovedGmmBuild } = await import("@/lib/gmm/build-gate.server");\\n    assertApprovedGmmBuild((context as typeof context & { gmmBuildId?: string }).gmmBuildId);')
+                            'const { requireUserId } = await import("./verify.server");\n    const { assertApprovedGmmBuild } = await import("@/lib/gmm/build-gate.server");\n    assertApprovedGmmBuild((context as typeof context & { gmmBuildId?: string }).gmmBuildId);')
           middleware.write_text(m)
 
           rest = src / "src/lib/gmm/rest.ts"
           r = rest.read_text()
           if 'assertApprovedGmmBuild' not in r:
               r = r.replace('import { requireUserId } from "@/lib/auth/verify.server";',
-                            'import { requireUserId } from "@/lib/auth/verify.server";\\nimport { assertApprovedGmmBuild } from "./build-gate.server";')
+                            'import { requireUserId } from "@/lib/auth/verify.server";\nimport { assertApprovedGmmBuild } from "./build-gate.server";')
               r = r.replace('    const userId = await requireUser(request);',
-                            '    // Health, provider webhooks and secret-authenticated worker stay available.\\n    assertApprovedGmmBuild(request.headers.get("x-gmm-build-id") ?? undefined);\\n    const userId = await requireUser(request);')
+                            '    // Health, provider webhooks and secret-authenticated worker stay available.\n    assertApprovedGmmBuild(request.headers.get("x-gmm-build-id") ?? undefined);\n    const userId = await requireUser(request);')
           rest.write_text(r)
 
           component = src / "src/components/gmm-app.tsx"
           c = component.read_text()
           if 'GMM_BUILD_ID' not in c:
               c = c.replace('import { STATION_BLURBS, DESTINATION_TYPES } from "@/lib/gmm/constants";',
-                            'import { STATION_BLURBS, DESTINATION_TYPES } from "@/lib/gmm/constants";\\nimport { GMM_BUILD_ID } from "@/lib/gmm/build-identity";')
+                            'import { STATION_BLURBS, DESTINATION_TYPES } from "@/lib/gmm/constants";\nimport { GMM_BUILD_ID } from "@/lib/gmm/build-identity";')
           # Attach the identity to every direct REST fetch in this component.
           lines = []
           for line in c.splitlines(keepends=True):
